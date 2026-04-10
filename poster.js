@@ -173,6 +173,46 @@ Return ONLY the post text, nothing else.`;
   }
 }
 
+// === GENERATE POST FROM CUSTOM TOPIC ===
+async function generateCustomPost(customTopic) {
+  const prompt = `You are a social media manager for Linklet (www.linklet.co.ke) — a free campus marketplace where Kenyan university students buy, sell, and trade items.
+
+Write a social media post about: "${customTopic}"
+
+Rules:
+- 2-4 sentences max, conversational and engaging
+- MUST include www.linklet.co.ke
+- Write for Kenyan university students
+- Sound like a real student, not a brand
+- Include 1-2 relevant emojis
+- End with a clear call to action
+- Add 3-5 relevant hashtags at the end
+- Never use "revolutionize", "game-changer", or "unleash"
+
+Return ONLY the post text, nothing else.`;
+
+  try {
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: 'You write authentic, engaging social media posts for Kenyan students. Return only the post text.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 300,
+      temperature: 0.9
+    }, {
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    return response.data.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
+  } catch (error) {
+    console.error('Groq error:', error.response?.data || error.message);
+    return null;
+  }
+}
+
 // === POST TO ALL PLATFORMS VIA ZERNIO ===
 async function postToAll(content, imageUrl) {
   const platforms = [
@@ -544,6 +584,51 @@ bot.onText(/\/post/, async (msg) => {
   if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
   await bot.sendMessage(msg.chat.id, '📝 Generating a new post...');
   await dailyPost();
+});
+
+// Custom topic: /topic back to school deals
+bot.onText(/\/topic (.+)/, async (msg, match) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+  const customTopic = match[1];
+  await bot.sendMessage(msg.chat.id, `📝 Generating post about: _"${customTopic}"_`, { parse_mode: 'Markdown' });
+
+  const imageData = await getPostImage();
+  const content = await generateCustomPost(customTopic);
+  if (content) {
+    await sendForApproval(content, 1, imageData.url);
+  } else {
+    await bot.sendMessage(msg.chat.id, '⚠️ Failed to generate. Try again.');
+  }
+});
+
+// Direct text: /write your exact post text here
+bot.onText(/\/write (.+)/, async (msg, match) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+  const customText = match[1];
+  const imageData = await getPostImage();
+  await sendForApproval(customText, 1, imageData.url);
+});
+
+// Help
+bot.onText(/\/help/, async (msg) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+  await bot.sendMessage(msg.chat.id, `🤖 *Linklet Social Poster Bot*
+
+*Commands:*
+/post — Generate a post (auto topic)
+/topic _your idea_ — Generate post about a custom topic
+/write _your text_ — Use your exact text as a post
+/status — Check pending posts & today's topic
+/help — Show this menu
+
+*Media:*
+📷 Send a photo — saves it for the next post
+🎬 Send a video — post to TikTok
+
+*Approval:*
+✅ Approve — publishes to Facebook, Instagram, Pinterest
+❌ Reject — give feedback, AI rewrites
+🔄 Regenerate — get a fresh version`, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/status/, async (msg) => {
