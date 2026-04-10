@@ -28,6 +28,60 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 // Store pending posts waiting for approval
 const pendingPosts = new Map();
 
+// Store custom images sent by admin for future posts
+const imageBank = [];
+const BACKEND_URL = 'https://api.linklet.co.ke/api';
+
+// === FETCH REAL LISTING IMAGE FROM LINKLET ===
+async function getListingImage() {
+  try {
+    const res = await axios.get(`${BACKEND_URL}/listings?limit=20&sort=newest`);
+    const listings = res.data.listings || res.data || [];
+
+    // Find listings with images
+    const withImages = listings.filter(l => l.images && l.images.length > 0);
+    if (withImages.length === 0) return null;
+
+    // Pick a random one
+    const listing = withImages[Math.floor(Math.random() * withImages.length)];
+    const image = listing.images[0];
+
+    // Build full URL
+    const imageUrl = image.startsWith('http') ? image : `https://api.linklet.co.ke${image}`;
+
+    return {
+      url: imageUrl,
+      title: listing.title,
+      price: listing.price,
+      id: listing.id
+    };
+  } catch (error) {
+    console.log('Could not fetch listings:', error.message);
+    return null;
+  }
+}
+
+// === GET BEST IMAGE FOR TODAY'S POST ===
+async function getPostImage() {
+  // Priority 1: Use a custom image from the bank if available
+  if (imageBank.length > 0) {
+    const img = imageBank.shift(); // Use and remove from bank
+    console.log('Using custom image from bank');
+    return { url: img.url, listing: null };
+  }
+
+  // Priority 2: Try to fetch a real listing image
+  const listing = await getListingImage();
+  if (listing) {
+    console.log(`Using listing image: "${listing.title}"`);
+    return { url: listing.url, listing };
+  }
+
+  // Priority 3: Fallback to logo
+  console.log('Fallback to logo');
+  return { url: 'https://www.linklet.co.ke/logo512.png', listing: null };
+}
+
 // === CONTENT TOPICS ===
 const TOPICS = [
   "Why students should use Linklet to sell their old textbooks and notes",
@@ -68,12 +122,15 @@ function getTodaysTopic() {
 }
 
 // === AI CONTENT GENERATION ===
-async function generatePost(feedback) {
+async function generatePost(feedback, listingContext) {
   const topic = getTodaysTopic();
 
   let extraInstruction = '';
   if (feedback) {
     extraInstruction = `\n\nIMPORTANT: The previous version was rejected. Here's the feedback: "${feedback}". Write a completely different post that addresses this feedback.`;
+  }
+  if (listingContext) {
+    extraInstruction += listingContext;
   }
 
   const prompt = `You are a social media manager for Linklet (www.linklet.co.ke) — a free campus marketplace where Kenyan university students buy, sell, and trade items.
@@ -117,7 +174,7 @@ Return ONLY the post text, nothing else.`;
 }
 
 // === POST TO ALL PLATFORMS VIA ZERNIO ===
-async function postToAll(content) {
+async function postToAll(content, imageUrl) {
   const platforms = [
     { platform: 'facebook', accountId: ACCOUNTS.facebook },
     { platform: 'instagram', accountId: ACCOUNTS.instagram },
@@ -129,7 +186,7 @@ async function postToAll(content) {
       content,
       platforms,
       publishNow: true,
-      mediaItems: [{ type: 'image', url: 'https://www.linklet.co.ke/logo512.png' }]
+      mediaItems: [{ type: 'image', url: imageUrl }]
     }, {
       headers: {
         'Authorization': `Bearer ${ZERNIO_API_KEY}`,
@@ -145,12 +202,12 @@ async function postToAll(content) {
 }
 
 // === SEND POST FOR APPROVAL ===
-async function sendForApproval(content, attempt) {
+async function sendForApproval(content, attempt, imageUrl) {
   const postId = Date.now().toString();
 
-  pendingPosts.set(postId, { content, attempt: attempt || 1 });
+  pendingPosts.set(postId, { content, attempt: attempt || 1, imageUrl });
 
-  const message = `📝 *New Post for Approval*\n\n${content}\n\n_(Attempt ${attempt || 1})_`;
+  const message = `📝 *New Post for Approval*\n\n${content}\n\n🖼 Image: ${imageUrl || 'logo'}\n_(Attempt ${attempt || 1})_`;
 
   await bot.sendMessage(ADMIN_CHAT_ID, message, {
     parse_mode: 'Markdown',
@@ -257,7 +314,7 @@ bot.on('callback_query', async (query) => {
     });
 
     console.log(`[${new Date().toLocaleTimeString()}] Post approved! Publishing...`);
-    const result = await postToAll(pending.content);
+    const result = await postToAll(pending.content, pending.imageUrl);
 
     if (result) {
       const urls = (result.post?.platforms || [])
@@ -283,7 +340,7 @@ bot.on('callback_query', async (query) => {
     });
 
     // Store that we're waiting for feedback
-    pendingPosts.set('awaiting_feedback', { postId, attempt: pending.attempt });
+    pendingPosts.set('awaiting_feedback', { postId, attempt: pending.attempt, imageUrl: pending.imageUrl });
     pendingPosts.delete(postId);
 
   } else if (action === 'regen') {
@@ -298,11 +355,29 @@ bot.on('callback_query', async (query) => {
 
     const newContent = await generatePost();
     if (newContent) {
-      await sendForApproval(newContent, pending.attempt + 1);
+      await sendForApproval(newContent, pending.attempt + 1, pending.imageUrl);
     } else {
       await bot.sendMessage(chatId, '⚠️ Failed to generate new content. Try again later.');
     }
   }
+});
+
+// === HANDLE PHOTO MESSAGES (save to image bank) ===
+bot.on('photo', async (msg) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+
+  // Get highest resolution photo
+  const photo = msg.photo[msg.photo.length - 1];
+  const file = await bot.getFile(photo.file_id);
+  const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
+
+  imageBank.push({ url: fileUrl, addedAt: new Date().toISOString() });
+
+  await bot.sendMessage(msg.chat.id, `🖼 *Image saved!* (${imageBank.length} images in bank)\n\nThis will be used for the next social media post instead of a listing image.`, {
+    parse_mode: 'Markdown'
+  });
+
+  console.log(`[${new Date().toLocaleTimeString()}] Image added to bank. Total: ${imageBank.length}`);
 });
 
 // === HANDLE VIDEO MESSAGES (TikTok posting) ===
@@ -432,7 +507,7 @@ bot.on('message', async (msg) => {
 
   const newContent = await generatePost(feedback);
   if (newContent) {
-    await sendForApproval(newContent, awaiting.attempt + 1);
+    await sendForApproval(newContent, awaiting.attempt + 1, awaiting.imageUrl);
   } else {
     await bot.sendMessage(msg.chat.id, '⚠️ Failed to generate new content.');
   }
@@ -445,15 +520,23 @@ async function dailyPost() {
   console.log(`Topic: "${getTodaysTopic()}"`);
   console.log('='.repeat(50));
 
-  const content = await generatePost();
+  // Get image first so we can mention the listing
+  const imageData = await getPostImage();
+  let listingContext = '';
+  if (imageData.listing) {
+    listingContext = `\n\nFeatured listing to mention: "${imageData.listing.title}" priced at KSh ${Number(imageData.listing.price).toLocaleString()}. Naturally mention this item in the post.`;
+  }
+
+  const content = await generatePost(null, listingContext);
   if (!content) {
     console.error('Failed to generate content.');
     await bot.sendMessage(ADMIN_CHAT_ID, '⚠️ Failed to generate today\'s post. Will retry tomorrow.');
     return;
   }
 
-  console.log(`Generated: ${content}\n`);
-  await sendForApproval(content, 1);
+  console.log(`Generated: ${content}`);
+  console.log(`Image: ${imageData.url}\n`);
+  await sendForApproval(content, 1, imageData.url);
 }
 
 // === MANUAL COMMANDS ===
