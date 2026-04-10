@@ -177,7 +177,70 @@ bot.on('callback_query', async (query) => {
   // Only allow admin
   if (chatId.toString() !== ADMIN_CHAT_ID.toString()) return;
 
-  const [action, postId] = query.data.split('_');
+  const data = query.data;
+
+  // Handle TikTok video buttons
+  if (data.startsWith('tiktok_') || data.startsWith('tiktokai_') || data.startsWith('tikcancel_') || data.startsWith('tikcustom_')) {
+    const videoId = data.split('_').slice(1).join('_');
+    const videoData = pendingPosts.get(`video_${videoId}`);
+
+    if (!videoData) {
+      await bot.answerCallbackQuery(query.id, { text: 'Video expired' });
+      return;
+    }
+
+    if (data.startsWith('tikcancel_')) {
+      await bot.answerCallbackQuery(query.id, { text: 'Cancelled' });
+      await bot.editMessageText('❌ TikTok post cancelled.', { chat_id: chatId, message_id: query.message.message_id });
+      pendingPosts.delete(`video_${videoId}`);
+      return;
+    }
+
+    if (data.startsWith('tiktokai_')) {
+      await bot.answerCallbackQuery(query.id, { text: 'Generating caption...' });
+      const aiCaption = await generateTikTokCaption();
+      videoData.caption = aiCaption;
+      await bot.editMessageText(`🤖 *AI Caption:*\n${aiCaption}\n\n_Approve or type your own caption:_`, {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: '🚀 Post with this caption', callback_data: `tiktok_${videoId}` },
+              { text: '✏️ Type my own', callback_data: `tikcustom_${videoId}` }
+            ]
+          ]
+        }
+      });
+      return;
+    }
+
+    if (data.startsWith('tikcustom_')) {
+      await bot.answerCallbackQuery(query.id, { text: 'Type your caption' });
+      await bot.editMessageText('✏️ Type your TikTok caption now:', { chat_id: chatId, message_id: query.message.message_id });
+      pendingPosts.set('awaiting_tik_caption', { videoId });
+      return;
+    }
+
+    // tiktok_ — post it
+    await bot.answerCallbackQuery(query.id, { text: 'Posting...' });
+    await bot.editMessageText('🚀 *Posting to TikTok...*', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+
+    const caption = videoData.caption || 'Check out Linklet — the free campus marketplace! www.linklet.co.ke #LinkletKe';
+    const result = await postVideoToTikTok(videoData.fileId, caption);
+
+    if (result) {
+      const url = result.post?.platforms?.[0]?.platformPostUrl || '';
+      await bot.sendMessage(chatId, `🎉 *Posted to TikTok!*\n${url}`, { parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, '⚠️ TikTok posting failed. Check logs.');
+    }
+    pendingPosts.delete(`video_${videoId}`);
+    return;
+  }
+
+  const [action, postId] = data.split('_');
   const pending = pendingPosts.get(postId);
 
   if (!pending) {
@@ -242,10 +305,118 @@ bot.on('callback_query', async (query) => {
   }
 });
 
+// === HANDLE VIDEO MESSAGES (TikTok posting) ===
+bot.on('video', async (msg) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+
+  const fileId = msg.video.file_id;
+  const caption = msg.caption || '';
+
+  // Store video info and ask for confirmation
+  const videoId = Date.now().toString();
+  pendingPosts.set(`video_${videoId}`, { fileId, caption });
+
+  let message = `🎬 *TikTok Video Ready*\n\n`;
+  if (caption) {
+    message += `Caption: ${caption}\n\n`;
+    message += `_Post with this caption or generate an AI caption?_`;
+  } else {
+    message += `_No caption provided. I'll generate one for you, or you can type your own._`;
+  }
+
+  await bot.sendMessage(msg.chat.id, message, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '🚀 Post to TikTok', callback_data: `tiktok_${videoId}` },
+          { text: '🤖 AI Caption', callback_data: `tiktokai_${videoId}` }
+        ],
+        [
+          { text: '❌ Cancel', callback_data: `tikcancel_${videoId}` }
+        ]
+      ]
+    }
+  });
+});
+
+// === POST VIDEO TO TIKTOK VIA ZERNIO ===
+async function postVideoToTikTok(fileId, caption) {
+  // Get the file URL from Telegram
+  const file = await bot.getFile(fileId);
+  const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
+
+  try {
+    const response = await axios.post('https://zernio.com/api/v1/posts', {
+      content: caption,
+      platforms: [{ platform: 'tiktok', accountId: ACCOUNTS.tiktok }],
+      publishNow: true,
+      mediaItems: [{ type: 'video', url: fileUrl }]
+    }, {
+      headers: {
+        'Authorization': `Bearer ${ZERNIO_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    console.log('TikTok post response:', JSON.stringify(response.data, null, 2));
+    return response.data;
+  } catch (error) {
+    console.error('TikTok post error:', error.response?.data || error.message);
+    return null;
+  }
+}
+
+// === GENERATE TIKTOK CAPTION ===
+async function generateTikTokCaption() {
+  const topic = getTodaysTopic();
+  try {
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        { role: 'system', content: 'You write viral TikTok captions for Kenyan students. Short, punchy, trendy. Return only the caption.' },
+        { role: 'user', content: `Write a TikTok caption about Linklet (www.linklet.co.ke) — a free campus marketplace for Kenyan students. Topic: "${topic}". Max 150 chars. Include 2-3 hashtags. Be trendy and relatable.` }
+      ],
+      max_tokens: 100,
+      temperature: 0.9
+    }, {
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    return response.data.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
+  } catch (error) {
+    return 'Check out Linklet — the free campus marketplace! www.linklet.co.ke #LinkletKe #CampusLife';
+  }
+}
+
+// === HANDLE TIKTOK CALLBACK BUTTONS ===
+// (handled in the main callback_query handler below)
+
 // === HANDLE FEEDBACK MESSAGES ===
 bot.on('message', async (msg) => {
   if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
   if (!msg.text || msg.text.startsWith('/')) return;
+
+  // Check if waiting for TikTok custom caption
+  const tikCaption = pendingPosts.get('awaiting_tik_caption');
+  if (tikCaption) {
+    pendingPosts.delete('awaiting_tik_caption');
+    const videoData = pendingPosts.get(`video_${tikCaption.videoId}`);
+    if (videoData) {
+      await bot.sendMessage(msg.chat.id, '🚀 Posting to TikTok...');
+      const result = await postVideoToTikTok(videoData.fileId, msg.text);
+      if (result) {
+        const url = result.post?.platforms?.[0]?.platformPostUrl || '';
+        await bot.sendMessage(msg.chat.id, `🎉 *Posted to TikTok!*\n${url}`, { parse_mode: 'Markdown' });
+      } else {
+        await bot.sendMessage(msg.chat.id, '⚠️ TikTok posting failed.');
+      }
+      pendingPosts.delete(`video_${tikCaption.videoId}`);
+    }
+    return;
+  }
 
   const awaiting = pendingPosts.get('awaiting_feedback');
   if (!awaiting) return;
