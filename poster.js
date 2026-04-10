@@ -77,9 +77,9 @@ async function getPostImage() {
     return { url: listing.url, listing };
   }
 
-  // Priority 3: Fallback to logo
-  console.log('Fallback to logo');
-  return { url: 'https://www.linklet.co.ke/logo512.png', listing: null };
+  // Priority 3: Fallback to branded image
+  console.log('Fallback to branded image');
+  return { url: 'https://www.linklet.co.ke/Linklet_logo.png', listing: null };
 }
 
 // === CONTENT TOPICS ===
