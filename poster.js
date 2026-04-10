@@ -337,8 +337,8 @@ bot.on('callback_query', async (query) => {
 
   const data = query.data;
 
-  // Handle TikTok video buttons
-  if (data.startsWith('tiktok_') || data.startsWith('tiktokai_') || data.startsWith('tikcancel_') || data.startsWith('tikcustom_')) {
+  // Handle video buttons
+  if (data.startsWith('vid')) {
     const videoId = data.split('_').slice(1).join('_');
     const videoData = pendingPosts.get(`video_${videoId}`);
 
@@ -347,26 +347,33 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    if (data.startsWith('tikcancel_')) {
+    if (data.startsWith('vidcancel_')) {
       await bot.answerCallbackQuery(query.id, { text: 'Cancelled' });
-      await bot.editMessageText('❌ TikTok post cancelled.', { chat_id: chatId, message_id: query.message.message_id });
+      await bot.editMessageText('❌ Video post cancelled.', { chat_id: chatId, message_id: query.message.message_id });
       pendingPosts.delete(`video_${videoId}`);
       return;
     }
 
-    if (data.startsWith('tiktokai_')) {
+    if (data.startsWith('vidai_')) {
       await bot.answerCallbackQuery(query.id, { text: 'Generating caption...' });
       const aiCaption = await generateTikTokCaption();
       videoData.caption = aiCaption;
-      await bot.editMessageText(`🤖 *AI Caption:*\n${aiCaption}\n\n_Approve or type your own caption:_`, {
+      await bot.editMessageText(`🤖 *AI Caption:*\n${aiCaption}\n\n_Post with this or type your own:_`, {
         chat_id: chatId,
         message_id: query.message.message_id,
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
             [
-              { text: '🚀 Post with this caption', callback_data: `tiktok_${videoId}` },
-              { text: '✏️ Type my own', callback_data: `tikcustom_${videoId}` }
+              { text: '🚀 All Platforms', callback_data: `vidall_${videoId}` }
+            ],
+            [
+              { text: '📱 TikTok', callback_data: `vidtiktok_${videoId}` },
+              { text: '📸 Instagram', callback_data: `vidinsta_${videoId}` },
+              { text: '📘 Facebook', callback_data: `vidfb_${videoId}` }
+            ],
+            [
+              { text: '✏️ Type my own', callback_data: `vidcustom_${videoId}` }
             ]
           ]
         }
@@ -374,25 +381,44 @@ bot.on('callback_query', async (query) => {
       return;
     }
 
-    if (data.startsWith('tikcustom_')) {
+    if (data.startsWith('vidcustom_')) {
       await bot.answerCallbackQuery(query.id, { text: 'Type your caption' });
-      await bot.editMessageText('✏️ Type your TikTok caption now:', { chat_id: chatId, message_id: query.message.message_id });
+      await bot.editMessageText('✏️ Type your caption now:', { chat_id: chatId, message_id: query.message.message_id });
       pendingPosts.set('awaiting_tik_caption', { videoId });
       return;
     }
 
-    // tiktok_ — post it
+    // Determine target platforms
+    let targets = [];
+    let label = '';
+    if (data.startsWith('vidall_')) {
+      targets = ['tiktok', 'instagram', 'facebook'];
+      label = 'TikTok + Instagram + Facebook';
+    } else if (data.startsWith('vidtiktok_')) {
+      targets = ['tiktok'];
+      label = 'TikTok';
+    } else if (data.startsWith('vidinsta_')) {
+      targets = ['instagram'];
+      label = 'Instagram';
+    } else if (data.startsWith('vidfb_')) {
+      targets = ['facebook'];
+      label = 'Facebook';
+    }
+
     await bot.answerCallbackQuery(query.id, { text: 'Posting...' });
-    await bot.editMessageText('🚀 *Posting to TikTok...*', { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
+    await bot.editMessageText(`🚀 *Posting to ${label}...*`, { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' });
 
     const caption = videoData.caption || 'Check out Linklet — the free campus marketplace! www.linklet.co.ke #LinkletKe';
-    const result = await postVideoToTikTok(videoData.fileId, caption);
+    const result = await postVideo(videoData.fileId, caption, targets);
 
     if (result) {
-      const url = result.post?.platforms?.[0]?.platformPostUrl || '';
-      await bot.sendMessage(chatId, `🎉 *Posted to TikTok!*\n${url}`, { parse_mode: 'Markdown' });
+      const urls = (result.post?.platforms || [])
+        .filter(p => p.platformPostUrl)
+        .map(p => `${p.platform}: ${p.platformPostUrl}`)
+        .join('\n');
+      await bot.sendMessage(chatId, `🎉 *Posted to ${label}!*\n\n${urls || 'Published successfully'}`, { parse_mode: 'Markdown' });
     } else {
-      await bot.sendMessage(chatId, '⚠️ TikTok posting failed. Check logs.');
+      await bot.sendMessage(chatId, `⚠️ Failed to post to ${label}.`);
     }
     pendingPosts.delete(`video_${videoId}`);
     return;
@@ -492,40 +518,50 @@ bot.on('video', async (msg) => {
   const videoId = Date.now().toString();
   pendingPosts.set(`video_${videoId}`, { fileId, caption });
 
-  let message = `🎬 *TikTok Video Ready*\n\n`;
+  let message = `🎬 *Video Ready*\n\n`;
   if (caption) {
     message += `Caption: ${caption}\n\n`;
-    message += `_Post with this caption or generate an AI caption?_`;
-  } else {
-    message += `_No caption provided. I'll generate one for you, or you can type your own._`;
   }
+  message += `_Where do you want to post this?_`;
 
   await bot.sendMessage(msg.chat.id, message, {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🚀 Post to TikTok', callback_data: `tiktok_${videoId}` },
-          { text: '🤖 AI Caption', callback_data: `tiktokai_${videoId}` }
+          { text: '🚀 All Platforms', callback_data: `vidall_${videoId}` }
         ],
         [
-          { text: '❌ Cancel', callback_data: `tikcancel_${videoId}` }
+          { text: '📱 TikTok', callback_data: `vidtiktok_${videoId}` },
+          { text: '📸 Instagram', callback_data: `vidinsta_${videoId}` },
+          { text: '📘 Facebook', callback_data: `vidfb_${videoId}` }
+        ],
+        [
+          { text: '🤖 AI Caption first', callback_data: `vidai_${videoId}` },
+          { text: '❌ Cancel', callback_data: `vidcancel_${videoId}` }
         ]
       ]
     }
   });
 });
 
-// === POST VIDEO TO TIKTOK VIA ZERNIO ===
-async function postVideoToTikTok(fileId, caption) {
-  // Get the file URL from Telegram
+// === POST VIDEO TO PLATFORMS VIA ZERNIO ===
+async function postVideo(fileId, caption, targetPlatforms) {
   const file = await bot.getFile(fileId);
   const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
+
+  const platformMap = {
+    tiktok: { platform: 'tiktok', accountId: ACCOUNTS.tiktok },
+    instagram: { platform: 'instagram', accountId: ACCOUNTS.instagram },
+    facebook: { platform: 'facebook', accountId: ACCOUNTS.facebook }
+  };
+
+  const platforms = targetPlatforms.map(p => platformMap[p]).filter(Boolean);
 
   try {
     const response = await axios.post('https://zernio.com/api/v1/posts', {
       content: caption,
-      platforms: [{ platform: 'tiktok', accountId: ACCOUNTS.tiktok }],
+      platforms,
       publishNow: true,
       mediaItems: [{ type: 'video', url: fileUrl }]
     }, {
@@ -535,10 +571,10 @@ async function postVideoToTikTok(fileId, caption) {
       }
     });
 
-    console.log('TikTok post response:', JSON.stringify(response.data, null, 2));
+    console.log('Video post response:', JSON.stringify(response.data, null, 2));
     return response.data;
   } catch (error) {
-    console.error('TikTok post error:', error.response?.data || error.message);
+    console.error('Video post error:', error.response?.data || error.message);
     return null;
   }
 }
@@ -575,21 +611,26 @@ bot.on('message', async (msg) => {
   if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
   if (!msg.text || msg.text.startsWith('/')) return;
 
-  // Check if waiting for TikTok custom caption
+  // Check if waiting for video custom caption
   const tikCaption = pendingPosts.get('awaiting_tik_caption');
   if (tikCaption) {
     pendingPosts.delete('awaiting_tik_caption');
     const videoData = pendingPosts.get(`video_${tikCaption.videoId}`);
     if (videoData) {
-      await bot.sendMessage(msg.chat.id, '🚀 Posting to TikTok...');
-      const result = await postVideoToTikTok(videoData.fileId, msg.text);
-      if (result) {
-        const url = result.post?.platforms?.[0]?.platformPostUrl || '';
-        await bot.sendMessage(msg.chat.id, `🎉 *Posted to TikTok!*\n${url}`, { parse_mode: 'Markdown' });
-      } else {
-        await bot.sendMessage(msg.chat.id, '⚠️ TikTok posting failed.');
-      }
-      pendingPosts.delete(`video_${tikCaption.videoId}`);
+      videoData.caption = msg.text;
+      await bot.sendMessage(msg.chat.id, `✅ Caption saved: _"${msg.text}"_\n\nNow pick where to post:`, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🚀 All Platforms', callback_data: `vidall_${tikCaption.videoId}` }],
+            [
+              { text: '📱 TikTok', callback_data: `vidtiktok_${tikCaption.videoId}` },
+              { text: '📸 Instagram', callback_data: `vidinsta_${tikCaption.videoId}` },
+              { text: '📘 Facebook', callback_data: `vidfb_${tikCaption.videoId}` }
+            ]
+          ]
+        }
+      });
     }
     return;
   }
