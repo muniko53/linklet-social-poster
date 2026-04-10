@@ -82,43 +82,104 @@ async function getPostImage() {
   return { url: 'https://www.linklet.co.ke/Linklet_logo.png', listing: null };
 }
 
-// === CONTENT TOPICS ===
-const TOPICS = [
-  "Why students should use Linklet to sell their old textbooks and notes",
-  "How Linklet makes it easy to find cheap electronics on campus",
-  "Moving out of your hostel? Sell your furniture on Linklet instead of throwing it away",
+// === SEMESTER-AWARE TOPICS ===
+// Kenyan university calendar (approximate):
+// Jan-April: Semester 1 (mid-sem around Feb-March)
+// May: End of Sem 1 / Short break
+// June-Aug: Semester 2 (mid-sem around July)
+// Sept: End of Sem 2
+// Oct-Dec: Long break / Some have Sem 3
+
+function getSemesterPeriod() {
+  const month = new Date().getMonth(); // 0-11
+  const day = new Date().getDate();
+
+  if (month === 0) return 'new_year'; // January
+  if (month === 1) return 'early_semester'; // February
+  if (month === 2 || month === 3) return 'mid_semester'; // March-April
+  if (month === 4) return 'end_semester'; // May
+  if (month === 5) return 'early_semester'; // June (Sem 2 start)
+  if (month === 6) return 'mid_semester'; // July
+  if (month === 7 || month === 8) return 'end_semester'; // Aug-Sep
+  if (month === 9) return 'break'; // October
+  if (month === 10) return 'break'; // November
+  if (month === 11) return 'new_year'; // December
+  return 'general';
+}
+
+const TOPICS_BY_PERIOD = {
+  new_year: [
+    "New year, new campus hustle — start selling on Linklet",
+    "Planning for next semester? Find affordable second-hand items on Linklet",
+    "Got gifts you don't need? Sell them on Linklet and start the year with extra cash",
+    "New year resolution: stop overpaying. Check Linklet for student deals first",
+    "Back on campus soon? List what you don't need and buy what you do on Linklet"
+  ],
+  early_semester: [
+    "New semester, new needs — find affordable textbooks and supplies on Linklet",
+    "Just moved into a new room? Find furniture, electronics, and more from fellow students on Linklet",
+    "Looking for a cheap laptop or phone to start the semester? Check Linklet first",
+    "Textbook prices are crazy — buy second-hand from fellow students on Linklet instead",
+    "Setting up your new hostel room? Students are selling essentials on Linklet right now",
+    "Pro tip: before you spend at the shops, check what students are selling on Linklet",
+    "New semester energy — buy smart, sell smart on Linklet"
+  ],
+  mid_semester: [
+    "Mid-semester grind is real — need a study lamp, charger, or calculator? Check Linklet",
+    "Broke in the middle of the semester? Sell stuff you don't use on Linklet for quick cash",
+    "Need study materials? Students sell notes, past papers, and textbooks on Linklet daily",
+    "Campus life hack: Linklet has everything from electronics to snacks, sold by students near you",
+    "Your charger broke mid-semester? Find a cheap replacement on Linklet before going to town",
+    "Mid-sem and running low on cash? List something on Linklet — it sells faster than you think",
+    "Looking for affordable meals, supplies, or electronics? Fellow students have you covered on Linklet",
+    "That thing sitting in your room collecting dust? Someone on campus wants to buy it — list it on Linklet",
+    "Linklet is your campus shortcut — why walk to town when a student nearby has what you need?",
+    "Students helping students — that's what Linklet is about. Buy and sell on campus, for free",
+    "Need something? Post it on Linklet. Someone on campus probably has it",
+    "Linklet tip: good photos and fair prices = fast sales. Try it",
+    "Your campus, your marketplace — Linklet connects students who want to buy with students who want to sell"
+  ],
+  end_semester: [
+    "Semester's ending — sell what you won't carry home on Linklet",
+    "Moving out of your hostel? Don't throw stuff away — sell it on Linklet",
+    "End of semester clearance: list your books, electronics, and furniture on Linklet",
+    "Going home for the break? Cash in on items you don't need — list them on Linklet",
+    "Last chance to sell before the break — list your items on Linklet today",
+    "Don't leave money on the table — sell your semester stuff on Linklet before you go",
+    "That mattress, kettle, or iron you won't need next semester? Someone will buy it on Linklet"
+  ],
+  break: [
+    "On break but still hustling — list items on Linklet and sell to students heading back early",
+    "Use the break to set up your Linklet account and be ready to sell when campus opens",
+    "Planning for next semester? Browse Linklet now and bookmark what you need",
+    "Break time hustle: buy low on Linklet now, sell when demand is high next semester",
+    "Linklet doesn't stop during the break — students are still trading. Are you?"
+  ]
+};
+
+// General topics that work anytime
+const GENERAL_TOPICS = [
   "Linklet is completely free — no listing fees, no commission, just students helping students",
-  "Looking for a laptop, phone, or charger? Check Linklet before going to the shops",
-  "Why campus marketplaces like Linklet are the future of student commerce in Kenya",
-  "Sell your clothes, shoes, and accessories on Linklet — your campus closet sale",
-  "Start your semester right — find affordable second-hand items on Linklet",
   "M-Pesa payments make buying on Linklet safe and easy",
-  "Linklet tip: good photos and honest descriptions help you sell faster",
-  "End of semester? Cash in on stuff you no longer need — list it on Linklet",
   "Linklet connects you directly with buyers and sellers on your campus — no middleman",
   "Students are already trading on Linklet — join the community at www.linklet.co.ke",
-  "From dorm room to marketplace: how students are making money with Linklet",
-  "Need something? Before you buy new, check what fellow students are selling on Linklet",
   "Linklet is built by a student, for students — and it's growing every day",
-  "Your old gaming console or speaker could be someone else's treasure — list it on Linklet",
   "Campus hustle made easy: buy low, sell smart on Linklet",
-  "Why walk to town when you can find what you need from a student nearby on Linklet?",
-  "Linklet: where every Kenyan campus student can be an entrepreneur",
-  "Stop scrolling, start selling — your stuff has value on Linklet",
-  "The easiest way to make extra cash as a student? Sell on Linklet",
-  "Linklet makes campus trading simple — no fees, no hassle, just connect and trade",
-  "Looking for affordable study materials? Students sell notes and books on Linklet daily",
-  "Your campus, your marketplace — Linklet brings students together to buy and sell",
-  "Declutter your room and make money — list anything on Linklet in under 2 minutes",
   "Linklet is growing across Kenyan universities — are you in yet?",
   "Safe, simple, student-powered — that's Linklet",
-  "From phones to furniture, students find the best deals on Linklet",
-  "Join hundreds of students already buying and selling on Linklet — it's free to start"
+  "Linklet: where every Kenyan campus student can be an entrepreneur",
+  "Why walk to town when you can find what you need from a student nearby on Linklet?"
 ];
 
 function getTodaysTopic() {
+  const period = getSemesterPeriod();
+  const periodTopics = TOPICS_BY_PERIOD[period] || GENERAL_TOPICS;
+
+  // Combine period-specific + general topics, weighted toward period-specific
+  const allTopics = [...periodTopics, ...periodTopics, ...GENERAL_TOPICS];
+
   const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
-  return TOPICS[dayOfYear % TOPICS.length];
+  return allTopics[dayOfYear % allTopics.length];
 }
 
 // === AI CONTENT GENERATION ===
