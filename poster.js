@@ -1,17 +1,20 @@
 const axios = require('axios');
+const TelegramBot = require('node-telegram-bot-api');
 const { CronJob } = require('cron');
 const http = require('http');
 
 // === CONFIG ===
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const ZERNIO_API_KEY = process.env.ZERNIO_API_KEY;
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-if (!GROQ_API_KEY || !ZERNIO_API_KEY) {
-  console.error('Missing GROQ_API_KEY or ZERNIO_API_KEY');
+if (!GROQ_API_KEY || !ZERNIO_API_KEY || !TELEGRAM_TOKEN || !ADMIN_CHAT_ID) {
+  console.error('Missing env vars: GROQ_API_KEY, ZERNIO_API_KEY, TELEGRAM_TOKEN, ADMIN_CHAT_ID');
   process.exit(1);
 }
 
-// === LINKED ACCOUNTS (set via env vars or defaults) ===
+// === LINKED ACCOUNTS ===
 const ACCOUNTS = {
   facebook: process.env.ZERNIO_FACEBOOK_ID || '',
   instagram: process.env.ZERNIO_INSTAGRAM_ID || '',
@@ -19,7 +22,13 @@ const ACCOUNTS = {
   tiktok: process.env.ZERNIO_TIKTOK_ID || ''
 };
 
-// === CONTENT TOPICS (rotates daily) ===
+// === TELEGRAM BOT (separate from Linklet support bot — uses same token but different purpose) ===
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+
+// Store pending posts waiting for approval
+const pendingPosts = new Map();
+
+// === CONTENT TOPICS ===
 const TOPICS = [
   "Why students should use Linklet to sell their old textbooks and notes",
   "How Linklet makes it easy to find cheap electronics on campus",
@@ -59,8 +68,13 @@ function getTodaysTopic() {
 }
 
 // === AI CONTENT GENERATION ===
-async function generatePost() {
+async function generatePost(feedback) {
   const topic = getTodaysTopic();
+
+  let extraInstruction = '';
+  if (feedback) {
+    extraInstruction = `\n\nIMPORTANT: The previous version was rejected. Here's the feedback: "${feedback}". Write a completely different post that addresses this feedback.`;
+  }
 
   const prompt = `You are a social media manager for Linklet (www.linklet.co.ke) — a free campus marketplace where Kenyan university students buy, sell, and trade items.
 
@@ -75,6 +89,7 @@ Rules:
 - End with a clear call to action
 - Add 3-5 relevant hashtags at the end
 - Never use "revolutionize", "game-changer", or "unleash"
+${extraInstruction}
 
 Return ONLY the post text, nothing else.`;
 
@@ -103,7 +118,6 @@ Return ONLY the post text, nothing else.`;
 
 // === POST TO ALL PLATFORMS VIA ZERNIO ===
 async function postToAll(content) {
-  // Post to Facebook, Instagram, Pinterest (text + image platforms)
   const platforms = [
     { platform: 'facebook', accountId: ACCOUNTS.facebook },
     { platform: 'instagram', accountId: ACCOUNTS.instagram },
@@ -123,16 +137,137 @@ async function postToAll(content) {
       }
     });
 
-    console.log('\nZernio response:');
-    console.log(JSON.stringify(response.data, null, 2));
     return response.data;
   } catch (error) {
-    console.error('Zernio error:', JSON.stringify(error.response?.data || error.message, null, 2));
+    console.error('Zernio error:', error.response?.data || error.message);
     return null;
   }
 }
 
-// === MAIN ===
+// === SEND POST FOR APPROVAL ===
+async function sendForApproval(content, attempt) {
+  const postId = Date.now().toString();
+
+  pendingPosts.set(postId, { content, attempt: attempt || 1 });
+
+  const message = `📝 *New Post for Approval*\n\n${content}\n\n_(Attempt ${attempt || 1})_`;
+
+  await bot.sendMessage(ADMIN_CHAT_ID, message, {
+    parse_mode: 'Markdown',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Approve & Post', callback_data: `approve_${postId}` },
+          { text: '❌ Reject', callback_data: `reject_${postId}` }
+        ],
+        [
+          { text: '🔄 Regenerate (new version)', callback_data: `regen_${postId}` }
+        ]
+      ]
+    }
+  });
+
+  console.log(`[${new Date().toLocaleTimeString()}] Sent post for approval (ID: ${postId})`);
+}
+
+// === HANDLE APPROVAL BUTTONS ===
+bot.on('callback_query', async (query) => {
+  const chatId = query.message.chat.id;
+
+  // Only allow admin
+  if (chatId.toString() !== ADMIN_CHAT_ID.toString()) return;
+
+  const [action, postId] = query.data.split('_');
+  const pending = pendingPosts.get(postId);
+
+  if (!pending) {
+    await bot.answerCallbackQuery(query.id, { text: 'Post expired or already handled' });
+    return;
+  }
+
+  if (action === 'approve') {
+    await bot.answerCallbackQuery(query.id, { text: 'Publishing...' });
+    await bot.editMessageText(`✅ *APPROVED & PUBLISHING*\n\n${pending.content}`, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: 'Markdown'
+    });
+
+    console.log(`[${new Date().toLocaleTimeString()}] Post approved! Publishing...`);
+    const result = await postToAll(pending.content);
+
+    if (result) {
+      const urls = (result.post?.platforms || [])
+        .filter(p => p.platformPostUrl)
+        .map(p => `${p.platform}: ${p.platformPostUrl}`)
+        .join('\n');
+
+      await bot.sendMessage(chatId, `🎉 *Posted successfully!*\n\n${urls || 'Published to all platforms'}`, {
+        parse_mode: 'Markdown'
+      });
+    } else {
+      await bot.sendMessage(chatId, '⚠️ Publishing failed. Check the logs.');
+    }
+
+    pendingPosts.delete(postId);
+
+  } else if (action === 'reject') {
+    await bot.answerCallbackQuery(query.id, { text: 'Send your feedback' });
+    await bot.editMessageText(`❌ *REJECTED*\n\n${pending.content}\n\n_Reply with your feedback and I'll generate a new version._`, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: 'Markdown'
+    });
+
+    // Store that we're waiting for feedback
+    pendingPosts.set('awaiting_feedback', { postId, attempt: pending.attempt });
+    pendingPosts.delete(postId);
+
+  } else if (action === 'regen') {
+    await bot.answerCallbackQuery(query.id, { text: 'Regenerating...' });
+    await bot.editMessageText(`🔄 *REGENERATING*\n\n_Creating a new version..._`, {
+      chat_id: chatId,
+      message_id: query.message.message_id,
+      parse_mode: 'Markdown'
+    });
+
+    pendingPosts.delete(postId);
+
+    const newContent = await generatePost();
+    if (newContent) {
+      await sendForApproval(newContent, pending.attempt + 1);
+    } else {
+      await bot.sendMessage(chatId, '⚠️ Failed to generate new content. Try again later.');
+    }
+  }
+});
+
+// === HANDLE FEEDBACK MESSAGES ===
+bot.on('message', async (msg) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+  if (!msg.text || msg.text.startsWith('/')) return;
+
+  const awaiting = pendingPosts.get('awaiting_feedback');
+  if (!awaiting) return;
+
+  const feedback = msg.text;
+  pendingPosts.delete('awaiting_feedback');
+
+  await bot.sendMessage(msg.chat.id, `📝 Got it! Regenerating with your feedback:\n_"${feedback}"_`, {
+    parse_mode: 'Markdown'
+  });
+
+  console.log(`[${new Date().toLocaleTimeString()}] Feedback received: "${feedback}"`);
+
+  const newContent = await generatePost(feedback);
+  if (newContent) {
+    await sendForApproval(newContent, awaiting.attempt + 1);
+  } else {
+    await bot.sendMessage(msg.chat.id, '⚠️ Failed to generate new content.');
+  }
+});
+
+// === DAILY FLOW: GENERATE → SEND FOR APPROVAL ===
 async function dailyPost() {
   console.log(`\n${'='.repeat(50)}`);
   console.log(`[${new Date().toISOString()}] Generating daily post...`);
@@ -141,35 +276,35 @@ async function dailyPost() {
 
   const content = await generatePost();
   if (!content) {
-    console.error('Failed to generate content. Skipping.');
+    console.error('Failed to generate content.');
+    await bot.sendMessage(ADMIN_CHAT_ID, '⚠️ Failed to generate today\'s post. Will retry tomorrow.');
     return;
   }
 
-  console.log(`\nGenerated post:\n${content}\n`);
-  console.log(`(${content.length} chars)`);
-
-  const result = await postToAll(content);
-  if (result) {
-    console.log('\nPost published!');
-  }
+  console.log(`Generated: ${content}\n`);
+  await sendForApproval(content, 1);
 }
 
-// === PREVIEW MODE ===
-async function previewPost() {
-  console.log('Generating preview (not posting)...\n');
-  console.log(`Topic: "${getTodaysTopic()}"\n`);
-  const content = await generatePost();
-  console.log('--- PREVIEW ---');
-  console.log(content);
-  console.log(`\n(${content ? content.length : 0} chars)`);
-}
+// === MANUAL COMMANDS ===
+bot.onText(/\/post/, async (msg) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+  await bot.sendMessage(msg.chat.id, '📝 Generating a new post...');
+  await dailyPost();
+});
+
+bot.onText(/\/status/, async (msg) => {
+  if (msg.chat.id.toString() !== ADMIN_CHAT_ID.toString()) return;
+  const pending = pendingPosts.size;
+  await bot.sendMessage(msg.chat.id, `📊 *Status*\nPending approvals: ${pending}\nToday's topic: "${getTodaysTopic()}"`, {
+    parse_mode: 'Markdown'
+  });
+});
 
 // === ENTRY POINT ===
 const args = process.argv.slice(2);
 
-if (args.includes('--preview')) {
-  previewPost();
-} else if (args.includes('--post-now')) {
+if (args.includes('--post-now')) {
+  // One-shot: generate and send for approval, keep running for button responses
   dailyPost();
 } else {
   // Schedule daily at 9 AM EAT (6 AM UTC)
@@ -177,23 +312,29 @@ if (args.includes('--preview')) {
 
   console.log('Linklet Social Media Poster started!');
   console.log('Schedule: 9:00 AM EAT daily');
-  console.log('Platforms: Facebook, Instagram, Pinterest\n');
-
-  // Run once on startup
-  console.log('Running initial post...');
-  dailyPost();
-
-  // Health check server for Render
-  const PORT = process.env.PORT || 3001;
-  http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: 'running',
-      schedule: '9:00 AM EAT daily',
-      platforms: ['facebook', 'instagram', 'pinterest'],
-      todaysTopic: getTodaysTopic()
-    }));
-  }).listen(PORT, () => {
-    console.log(`Health check on port ${PORT}`);
-  });
+  console.log('Platforms: Facebook, Instagram, Pinterest');
+  console.log('Approval via: Telegram\n');
+  console.log('Commands: /post (manual), /status\n');
 }
+
+// Health check server for Render
+const PORT = process.env.PORT || 3001;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    status: 'running',
+    schedule: '9:00 AM EAT daily',
+    platforms: ['facebook', 'instagram', 'pinterest'],
+    pendingApprovals: pendingPosts.size,
+    todaysTopic: getTodaysTopic()
+  }));
+}).listen(PORT, () => {
+  console.log(`Health check on port ${PORT}`);
+});
+
+// Error handling
+bot.on('polling_error', (error) => {
+  if (error.code !== 'ETELEGRAM' || !error.message.includes('409')) {
+    console.error('Polling error:', error.code, error.message);
+  }
+});
