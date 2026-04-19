@@ -779,3 +779,14 @@ bot.on('polling_error', (error) => {
     console.error('Polling error:', error.code, error.message);
   }
 });
+
+// Prevent crashes from unhandled promise rejections (e.g. Telegram 409 on redeploy)
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection (ignored):', reason?.message || reason);
+});
+
+// Graceful shutdown — stop polling before Render kills the process
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received — stopping bot gracefully...');
+  bot.stopPolling().then(() => process.exit(0)).catch(() => process.exit(0));
+});
